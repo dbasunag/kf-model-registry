@@ -18,6 +18,11 @@ deploy-latest-mr:
 	cd ../../ && IMG_VERSION=${IMG_VERSION} make image/build ARGS="--load$(if ${DEV_BUILD}, --target dev-build)"  && LOCAL=1 ./scripts/deploy_on_kind.sh
 	kubectl port-forward -n kubeflow services/model-registry-service 8080:8080 & echo $$! >> .port-forwards.pid
 
+.PHONY: deploy-mr-odh
+deploy-mr-odh:
+	cd ../../ && ./scripts/deploy_on_odh.sh
+	kubectl port-forward -n $(MR_NAMESPACE) services/model-registry 8080:8080 & echo $$! >> .port-forwards.pid
+
 .PHONY: deploy-test-minio
 deploy-test-minio:
 	cd ../../ && ./scripts/deploy_minio_on_kind.sh
@@ -61,6 +66,20 @@ undeploy-minio:
 undeploy-local-kind-registry:
 	@echo "Undeploy Local Kind Registry..."
 	cd ../../ && ./scripts/undeploy_local_registry.sh
+
+.PHONY: undeploy-mr-odh
+undeploy-mr-odh:
+	cd ../../ && ./scripts/undeploy_on_odh.sh
+
+.PHONY: test-e2e-odh
+test-e2e-odh:
+	@echo "Ensuring all extras are installed..."
+	poetry install --all-extras
+	@echo "Running tests..."
+	export MR_NAMESPACE=$$(kubectl get datasciencecluster $(DSC_NAME) -o jsonpath='{.spec.components.modelregistry.registriesNamespace}' 2>/dev/null)
+	@set -a; . ../../scripts/manifests/minio/.env; set +a; \
+	poetry run pytest --e2e -s -rA
+	@rm -f ../../scripts/manifests/minio/.env
 
 .PHONY: test
 test:
