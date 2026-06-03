@@ -151,14 +151,59 @@ func (w *mockFileWatcher) closeAll() {
 }
 
 func newTestPluginBase(state *mockState, loader *mockReloader, watcher *mockFileWatcher) *PluginBase {
-	pb := NewPluginBase(PluginBaseConfig{
+	return NewPluginBase(PluginBaseConfig{
 		Name:        "test",
 		State:       state,
 		Loader:      loader,
 		FileWatcher: watcher,
 		SourceIDs:   func() mapset.Set[string] { return mapset.NewSet("src-1", "src-2") },
 	})
-	return &pb
+}
+
+// --- Healthy tests ---
+
+func TestPluginBaseHealthyByDefault(t *testing.T) {
+	state := newMockState()
+	loader := &mockReloader{}
+	watcher := newMockFileWatcher()
+	pb := newTestPluginBase(state, loader, watcher)
+
+	assert.True(t, pb.Healthy())
+}
+
+func TestPluginBaseWatchFileErrorMarksUnhealthy(t *testing.T) {
+	state := newMockState("a.yaml")
+	loader := &mockReloader{}
+	watcher := newMockFileWatcher()
+	watcher.pathErr = errors.New("watch error")
+	pb := newTestPluginBase(state, loader, watcher)
+
+	require.NoError(t, pb.Start(context.Background()))
+
+	// Wait for the goroutine to hit the error.
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, pb.Healthy())
+}
+
+func TestPluginBaseWatchFileLeaderOpsFailureMarksUnhealthy(t *testing.T) {
+	Reset()
+	defer Reset()
+
+	state := newMockState("a.yaml")
+	loader := &mockReloader{leaderOpsErr: errors.New("db write failed")}
+	watcher := newMockFileWatcher()
+	pb := newTestPluginBase(state, loader, watcher)
+
+	state.SetLeader(true)
+	require.NoError(t, pb.Start(context.Background()))
+	require.True(t, watcher.waitForPath("a.yaml", time.Second))
+
+	assert.True(t, pb.Healthy(), "should be healthy before reload failure")
+
+	watcher.send("a.yaml")
+	assert.False(t, pb.Healthy(), "should be unhealthy after leader ops failure on reload")
+
+	watcher.closeAll()
 }
 
 // --- Start tests ---
@@ -304,6 +349,7 @@ func TestPluginBaseOnBecomeLeaderOpsFail(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "db down")
 	assert.False(t, state.IsLeader(), "leader state should revert on failure")
+	assert.False(t, pb.Healthy(), "should be unhealthy after leader ops failure")
 }
 
 func TestPluginBaseOnBecomeLeaderHookCalled(t *testing.T) {
@@ -361,6 +407,7 @@ func TestPluginBaseOnBecomeLeaderHookFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hook failed")
 	assert.False(t, state.IsLeader(), "leader state should revert on hook failure")
+	assert.False(t, pb.Healthy(), "should be unhealthy after hook failure")
 }
 
 func TestPluginBaseOnBecomeLeaderNilHook(t *testing.T) {
