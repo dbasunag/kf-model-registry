@@ -180,9 +180,7 @@ func TestPluginBaseWatchFileErrorMarksUnhealthy(t *testing.T) {
 
 	require.NoError(t, pb.Start(context.Background()))
 
-	// Wait for the goroutine to hit the error.
-	time.Sleep(50 * time.Millisecond)
-	assert.False(t, pb.Healthy())
+	assert.Eventually(t, func() bool { return !pb.Healthy() }, time.Second, 5*time.Millisecond)
 }
 
 func TestPluginBaseWatchFileLeaderOpsFailureMarksUnhealthy(t *testing.T) {
@@ -201,7 +199,8 @@ func TestPluginBaseWatchFileLeaderOpsFailureMarksUnhealthy(t *testing.T) {
 	assert.True(t, pb.Healthy(), "should be healthy before reload failure")
 
 	watcher.send("a.yaml")
-	assert.False(t, pb.Healthy(), "should be unhealthy after leader ops failure on reload")
+	assert.Eventually(t, func() bool { return !pb.Healthy() }, time.Second, 5*time.Millisecond,
+		"should be unhealthy after leader ops failure on reload")
 
 	watcher.closeAll()
 }
