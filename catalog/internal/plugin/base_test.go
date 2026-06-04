@@ -21,6 +21,7 @@ type mockReloader struct {
 	leaderOpsCalled        atomic.Int32
 	lastLeaderSourceIDs    mapset.Set[string]
 	parseAllErr            error
+	reloadParsingErr       error
 	leaderOpsErr           error
 }
 
@@ -29,8 +30,11 @@ func (m *mockReloader) ParseAllConfigs() error {
 	return m.parseAllErr
 }
 
-func (m *mockReloader) ReloadParsing() {
+func (m *mockReloader) ReloadParsing() error {
 	m.reloadParsingCalled.Add(1)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reloadParsingErr
 }
 
 func (m *mockReloader) PerformLeaderOperations(_ context.Context, allKnownSourceIDs mapset.Set[string]) error {
@@ -201,6 +205,36 @@ func TestPluginBaseWatchFileLeaderOpsFailureMarksUnhealthy(t *testing.T) {
 	watcher.send("a.yaml")
 	assert.Eventually(t, func() bool { return !pb.Healthy() }, time.Second, 5*time.Millisecond,
 		"should be unhealthy after leader ops failure on reload")
+
+	// Clear the error — next reload should recover health.
+	loader.mu.Lock()
+	loader.leaderOpsErr = nil
+	loader.mu.Unlock()
+
+	watcher.send("a.yaml")
+	assert.Eventually(t, func() bool { return pb.Healthy() }, time.Second, 5*time.Millisecond,
+		"should recover health after successful reload")
+
+	watcher.closeAll()
+}
+
+func TestPluginBaseWatchFileParseFailureMarksUnhealthy(t *testing.T) {
+	state := newMockState("a.yaml")
+	loader := &mockReloader{reloadParsingErr: errors.New("malformed yaml")}
+	watcher := newMockFileWatcher()
+	pb := newTestPluginBase(state, loader, watcher)
+
+	require.NoError(t, pb.Start(context.Background()))
+	require.True(t, watcher.waitForPath("a.yaml", time.Second))
+
+	assert.True(t, pb.Healthy(), "should be healthy before parse failure")
+
+	watcher.send("a.yaml")
+	assert.Eventually(t, func() bool { return !pb.Healthy() }, time.Second, 5*time.Millisecond,
+		"should be unhealthy after parse failure")
+
+	// Leader ops should not be attempted after a parse failure.
+	assert.Equal(t, int32(0), loader.leaderOpsCalled.Load())
 
 	watcher.closeAll()
 }

@@ -84,13 +84,19 @@ func (pb *PluginBase) watchFile(ctx context.Context, path string) {
 
 	for range changes {
 		glog.Infof("Config file changed, reloading %s sources: %s", pb.cfg.Name, path)
-		pb.cfg.Loader.ReloadParsing()
+		if err := pb.cfg.Loader.ReloadParsing(); err != nil {
+			pb.healthy.Store(false)
+			glog.Errorf("unable to reload %s config: %v", pb.cfg.Name, err)
+			continue
+		}
 
 		if pb.cfg.State.ShouldWriteDatabase() {
 			allKnownSourceIDs := CollectAllSourceIDs()
 			if err := pb.cfg.Loader.PerformLeaderOperations(ctx, allKnownSourceIDs); err != nil {
 				pb.healthy.Store(false)
 				glog.Errorf("unable to perform %s leader writes on reload: %v", pb.cfg.Name, err)
+			} else {
+				pb.healthy.Store(true)
 			}
 		}
 	}
@@ -122,6 +128,7 @@ func (pb *PluginBase) OnBecomeLeader(ctx context.Context) error {
 		}
 	}
 
+	pb.healthy.Store(true)
 	glog.Infof("%s plugin leader mode active", pb.cfg.Name)
 	<-ctx.Done()
 
