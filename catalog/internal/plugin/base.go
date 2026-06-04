@@ -89,6 +89,7 @@ func (pb *PluginBase) watchFile(ctx context.Context, path string) {
 			glog.Errorf("unable to reload %s config: %v", pb.cfg.Name, err)
 			continue
 		}
+		pb.healthy.Store(true)
 
 		if pb.cfg.State.ShouldWriteDatabase() {
 			allKnownSourceIDs := CollectAllSourceIDs()
