@@ -324,7 +324,7 @@ class TestImageSigner:
         assert "--use-signing-config=false" not in cmd
 
     @pytest.mark.parametrize(
-        "fulcio_url, rekor_url, expect_flag",
+        ("fulcio_url", "rekor_url", "expect_flag"),
         [
             pytest.param(FULCIO_URL, REKOR_URL, True, id="both_urls_disables_signing_config"),
             pytest.param(FULCIO_URL, None, False, id="only_fulcio_keeps_signing_config"),
