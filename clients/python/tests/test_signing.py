@@ -327,13 +327,13 @@ class TestImageSigner:
         ("fulcio_url", "rekor_url", "expect_flag"),
         [
             pytest.param(FULCIO_URL, REKOR_URL, True, id="both_urls_disables_signing_config"),
-            pytest.param(FULCIO_URL, None, False, id="only_fulcio_keeps_signing_config"),
-            pytest.param(None, REKOR_URL, False, id="only_rekor_keeps_signing_config"),
+            pytest.param(FULCIO_URL, None, True, id="only_fulcio_disables_signing_config"),
+            pytest.param(None, REKOR_URL, True, id="only_rekor_disables_signing_config"),
             pytest.param(None, None, False, id="no_urls_keeps_signing_config"),
         ],
     )
     def test_sign_use_signing_config_flag(self, tmp_path, mocker, fulcio_url, rekor_url, expect_flag):
-        """Test --use-signing-config=false is only added when both fulcio and rekor URLs are set."""
+        """Test --use-signing-config=false is added when any explicit service URL is set."""
         token_file = tmp_path / "token"
         token_file.write_text("test-token")
 
