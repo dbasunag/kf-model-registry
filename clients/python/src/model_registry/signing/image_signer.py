@@ -250,7 +250,7 @@ class ImageSigner:
                 token_content = f.read().strip()
             env["COSIGN_IDENTITY_TOKEN"] = token_content
 
-        if fulcio_url is not None or rekor_url is not None:
+        if fulcio_url is not None and rekor_url is not None:
             # cosign v3+ defaults --use-signing-config=true which conflicts
             # with explicit service URLs; disable it when URLs are provided
             cmd.extend(["--use-signing-config=false"])
