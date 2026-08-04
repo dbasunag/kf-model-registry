@@ -3,7 +3,6 @@ package leader
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -16,11 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const (
-	defaultUnhealthyThreshold int32 = 3
-	lockTableName                   = "locks"
-	staleLockMultiplier             = 2
-)
+const defaultUnhealthyThreshold int32 = 3
 
 // isFatalError reports whether err indicates a lost pglock schema (SQLSTATE 42P01,
 // "undefined table/sequence"). When resetFunc is available, the run loop attempts
@@ -43,55 +38,16 @@ type lockClient interface {
 }
 
 // pglockAdapter wraps *pglock.Client to satisfy lockClient.
-// It tracks the last-seen record version number (RVN) to detect stale locks
-// left by crashed pods that never released cleanly. FailIfLocked() prevents
-// pglock's built-in two-phase takeover, so this adapter reimplements the
-// staleness check externally.
 type pglockAdapter struct {
-	client        *pglock.Client
-	db            *sql.DB
-	leaseDuration time.Duration
-	lastSeenRVN   int64
-	lastSeenAt    time.Time
+	client *pglock.Client
 }
 
 func (a *pglockAdapter) acquireContext(ctx context.Context, name string) (lockHandle, error) {
-	lock, err := a.client.AcquireContext(ctx, name, pglock.FailIfLocked())
+	lock, err := a.client.AcquireContext(ctx, name)
 	if err != nil {
-		if errors.Is(err, pglock.ErrNotAcquired) {
-			a.reclaimStaleIfNeeded(ctx, name)
-		}
 		return nil, err
 	}
-	a.lastSeenAt = time.Time{}
 	return &pglockHandle{client: a.client, lock: lock}, nil
-}
-
-func (a *pglockAdapter) reclaimStaleIfNeeded(ctx context.Context, name string) {
-	var currentRVN int64
-	err := a.db.QueryRowContext(ctx,
-		`SELECT record_version_number FROM `+lockTableName+` WHERE name = $1`, name).Scan(&currentRVN)
-	if err != nil {
-		return
-	}
-
-	if !a.lastSeenAt.IsZero() && currentRVN == a.lastSeenRVN && time.Since(a.lastSeenAt) > staleLockMultiplier*a.leaseDuration {
-		result, err := a.db.ExecContext(ctx,
-			`DELETE FROM `+lockTableName+` WHERE name = $1 AND record_version_number = $2`,
-			name, currentRVN)
-		if err != nil {
-			glog.Warningf("Failed to delete stale lock %q: %v", name, err)
-		} else if rows, _ := result.RowsAffected(); rows > 0 {
-			glog.Infof("Reclaimed stale lock %q (RVN %d unchanged for >%v)", name, currentRVN, staleLockMultiplier*a.leaseDuration)
-		}
-		a.lastSeenAt = time.Time{}
-		return
-	}
-
-	if a.lastSeenAt.IsZero() || currentRVN != a.lastSeenRVN {
-		a.lastSeenRVN = currentRVN
-		a.lastSeenAt = time.Now()
-	}
 }
 
 // pglockHandle wraps a held *pglock.Lock to satisfy lockHandle.
@@ -157,8 +113,8 @@ type LeaderElector struct {
 	activeCallbacks sync.WaitGroup
 
 	// Health tracking.
-	// dbReachable flips to true on first successful DB contact (acquisition
-	// or ErrNotAcquired). Pods that have never contacted the DB are not ready.
+	// dbReachable is set after TryCreateTable succeeds in the constructor,
+	// proving DB connectivity before the election loop starts.
 	// consecutiveFailures counts consecutive infrastructure errors (DB
 	// unreachable, lost heartbeat). Healthy() returns false when the DB has
 	// never been reached OR failures exceed the threshold.
@@ -223,7 +179,7 @@ func NewLeaderElector(
 		lockName:           lockName,
 		lockDuration:       lockDuration,
 		heartbeatFreq:      heartbeatFreq,
-		locker:             &pglockAdapter{client: client, db: db, leaseDuration: lockDuration},
+		locker:             &pglockAdapter{client: client},
 		done:               make(chan struct{}),
 		unhealthyThreshold: defaultUnhealthyThreshold,
 		resetFunc: func() (lockClient, error) {
@@ -238,13 +194,14 @@ func NewLeaderElector(
 			if err := c.TryCreateTable(); err != nil {
 				return nil, fmt.Errorf("failed to recreate pglock schema: %w", err)
 			}
-			return &pglockAdapter{client: c, db: db, leaseDuration: lockDuration}, nil
+			return &pglockAdapter{client: c}, nil
 		},
 	}
-	// dbReachable starts false (zero value) — pod is not ready until first
-	// successful DB contact. No need to hack the failure counter.
+	// TryCreateTable succeeded — DB is reachable. Setting this before the
+	// election loop starts lets the readiness probe pass while AcquireContext
+	// blocks waiting for an existing leader to release the lock.
+	e.dbReachable.Store(true)
 
-	// Start the background goroutine immediately
 	go e.run()
 
 	return e, nil
@@ -339,8 +296,8 @@ func (e *LeaderElector) run() {
 		}
 
 		if err != nil {
-			// pglock returns ErrNotAcquired (not context.Canceled) when the
-			// context is cancelled during acquisition — check context first.
+			// pglock may return a wrapped error instead of context.Canceled
+			// when the context is cancelled during acquisition.
 			if ctx.Err() != nil {
 				glog.Info("Leader election canceled, shutting down")
 				e.err = ctx.Err()
@@ -348,16 +305,7 @@ func (e *LeaderElector) run() {
 			}
 
 			var delay time.Duration
-			if errors.Is(err, pglock.ErrNotAcquired) {
-				// Lock held by another pod — DB is reachable, pod is healthy.
-				// Keep retry interval short so we acquire quickly when the
-				// lease is released (e.g., during rolling updates).
-				e.dbReachable.Store(true)
-				e.consecutiveFailures.Store(0)
-				backoff.reset()
-				delay = backoff.next()
-				glog.Infof("Lock held by another instance, retrying in %v", delay)
-			} else if isFatalError(err) {
+			if isFatalError(err) {
 				if e.resetFunc == nil {
 					// No recovery path — exit so the pod restarts and recreates the schema.
 					glog.Errorf("Fatal leader election error (schema lost): %v — exiting for pod restart", err)
