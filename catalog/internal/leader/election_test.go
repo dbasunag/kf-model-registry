@@ -481,6 +481,61 @@ func TestRollingUpdateDoesNotDeadlock(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+// TestCrashedPodStaleLockReclaim verifies that when a pod crashes without
+// releasing the lock, a new pod detects the stale lock (RVN unchanged for
+// longer than leaseDuration) and reclaims it.
+func TestCrashedPodStaleLockReclaim(t *testing.T) {
+	gormDB, cleanup := testutils.SetupPostgresWithMigrations(t, testhelpers.MustDatastoreSpec(t))
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	lockDuration := 3 * time.Second
+	heartbeat := 1 * time.Second
+	lockName := "test_crash_reclaim"
+
+	// Bootstrap the schema by creating and immediately canceling a throwaway elector.
+	// This lets pglock create its table and sequence with the correct schema.
+	bootstrapCtx, bootstrapCancel := context.WithCancel(ctx)
+	bootstrapCancel()
+	bootstrap, err := leader.NewLeaderElector(gormDB, bootstrapCtx, lockName, lockDuration, heartbeat)
+	require.NoError(t, err)
+	_ = bootstrap.Wait()
+
+	// Simulate a crashed pod by inserting a stale lock row.
+	sqlDB, err := gormDB.DB()
+	require.NoError(t, err)
+
+	_, err = sqlDB.ExecContext(ctx,
+		`INSERT INTO locks (name, record_version_number, owner) VALUES ($1, $2, $3)
+		 ON CONFLICT (name) DO UPDATE SET record_version_number = $2, owner = $3`,
+		lockName, 9999, "pglock-dead-pod-123456")
+	require.NoError(t, err)
+
+	var becameLeader atomic.Bool
+	elector, err := leader.NewLeaderElector(gormDB, ctx, lockName, lockDuration, heartbeat)
+	require.NoError(t, err)
+	elector.OnBecomeLeader(func(ctx context.Context) {
+		becameLeader.Store(true)
+		<-ctx.Done()
+	})
+
+	require.Eventually(t, func() bool {
+		return elector.Healthy()
+	}, 3*time.Second, 100*time.Millisecond, "pod should report healthy (DB reachable via ErrNotAcquired)")
+
+	// staleLockMultiplier (2x) means reclaim takes ~2*lockDuration
+	require.Eventually(t, func() bool {
+		return becameLeader.Load()
+	}, 2*lockDuration+5*time.Second, 200*time.Millisecond,
+		"pod should reclaim stale lock and become leader within 2x leaseDuration")
+
+	cancel()
+	err = elector.Wait()
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
 // TestLeaderElector_GoroutineStartsImmediately verifies that the background
 // goroutine starts immediately from the constructor.
 func TestLeaderElector_GoroutineStartsImmediately(t *testing.T) {
