@@ -2,6 +2,7 @@ approvers:
   - adysenrothman
   - Al-Pragliola
   - andreyvelich  # noqa(kubeflow-hub-team)
+  - dbasunag
   - ederign
   - jonburdo
   - pboyd
