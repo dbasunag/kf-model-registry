@@ -17,9 +17,11 @@ if [[ -n "$LOCAL" ]]; then
     else
         kind create cluster -n "$CLUSTER_NAME"
     fi
-    kind load docker-image -n "$CLUSTER_NAME" "$IMG"
-    echo 'Image loaded into kind cluster - use this command to port forward the mr service:'
-    # echo "kubectl port-forward -n $MR_NAMESPACE service/model-registry-service 8080:8080 &"
+    if [[ -n "$IMG" ]]; then
+        kind load docker-image -n "$CLUSTER_NAME" "$IMG"
+        echo 'Image loaded into kind cluster - use this command to port forward the mr service:'
+        # echo "kubectl port-forward -n $MR_NAMESPACE service/model-registry-service 8080:8080 &"
+    fi
 fi
 
 echo 'Deploying SeaweedFS S3 storage to Kind cluster'

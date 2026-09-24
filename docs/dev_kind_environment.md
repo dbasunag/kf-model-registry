@@ -126,9 +126,9 @@ Upload test data:
 
 ```bash
 kubectl run seaweedfs-upload --rm -i --restart=Never -n seaweedfs \
-  --image=ghcr.io/chrislusf/seaweedfs:4.34 --command -- sh -c '
-echo "s3.bucket.list" | weed shell
-echo "sample model content" | mc --config-dir /tmp pipe local/default/models/sample-model/model.txt
+  --image=amazon/aws-cli --command -- sh -c '
+AWS_ACCESS_KEY_ID=seaweedadmin AWS_SECRET_ACCESS_KEY=seaweedadmin \
+  aws --endpoint-url http://seaweedfs:8333 s3 cp - s3://default/models/sample-model/model.txt
 '
 ```
 
